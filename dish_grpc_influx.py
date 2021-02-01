@@ -12,21 +12,24 @@ a host that has its system clock synced via NTP. Otherwise, the timestamps
 may get out of sync with real time.
 """
 
-from datetime import datetime
-from datetime import timezone
 import logging
 import os
 import signal
 import sys
 import time
 import warnings
+from datetime import datetime
+from datetime import timezone
 
-from influxdb import InfluxDBClient
+from influxdb_client.client.write_api import Point
+# from influxdb_client import InfluxDBClient
+from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.domain.write_precision import WritePrecision
 
 import dish_common
 
 HOST_DEFAULT = "localhost"
-DATABASE_DEFAULT = "starlinkstats"
+DATABASE_DEFAULT = "starlink"
 BULK_MEASUREMENT = "spacex.starlink.user_terminal.history"
 FLUSH_LIMIT = 6
 MAX_BATCH = 5000
@@ -53,11 +56,14 @@ def parse_args():
                        help="Hostname of MQTT broker, default: " + HOST_DEFAULT)
     group.add_argument("-p", "--port", type=int, help="Port number to use on MQTT broker")
     group.add_argument("-P", "--password", help="Set password for username/password authentication")
-    group.add_argument("-U", "--username", help="Set username for authentication")
+    group.add_argument("-U", "--username", help="Set username for username/password authentication")
+    group.add_argument("-T", "--token", help="Set token for InfluxDB v2 authentication")
+    group.add_argument("-u", "--url", help="Set url for InfluxDB v2 server")
+    group.add_argument("-o", "--org", help="Set org for InfluxDB v2 bucket")
     group.add_argument("-D",
                        "--database",
                        default=DATABASE_DEFAULT,
-                       help="Database name to use, default: " + DATABASE_DEFAULT)
+                       help="Database/Bucket name to use, default: " + DATABASE_DEFAULT)
     group.add_argument("-R", "--retention-policy", help="Retention policy name to use")
     group.add_argument("-k",
                        "--skip-query",
@@ -84,6 +90,9 @@ def parse_args():
         ("INFLUXDB_PORT", "port"),
         ("INFLUXDB_USER", "username"),
         ("INFLUXDB_PWD", "password"),
+        ("INFLUXDB_TOKEN", "token"),
+        ("INFLUXDB_ORG", "org"),
+        ("INFLUXDB_URL", "url"),
         ("INFLUXDB_DB", "database"),
         ("INFLUXDB_RP", "retention-policy"),
         ("INFLUXDB_SSL", "verify_ssl"),
@@ -107,7 +116,7 @@ def parse_args():
         parser.error("Password authentication requires username to be set")
 
     opts.icargs = {"timeout": 5}
-    for key in ["port", "host", "password", "username", "database", "verify_ssl"]:
+    for key in ["port", "host", "url", "password", "username", "database", "org", "token", "verify_ssl"]:
         val = getattr(opts, key)
         if val is not None:
             opts.icargs[key] = val
@@ -121,16 +130,29 @@ def parse_args():
 def flush_points(opts, gstate):
     try:
         while len(gstate.points) > MAX_BATCH:
-            gstate.influx_client.write_points(gstate.points[:MAX_BATCH],
-                                              time_precision="s",
-                                              retention_policy=opts.retention_policy)
+            if 'token' not in opts.icargs:
+                gstate.influx_client.write_points(gstate.points[:MAX_BATCH],
+                                                  time_precision="s",
+                                                  retention_policy=opts.retention_policy)
+            else:
+                points = [Point.from_dict(i, write_precision=WritePrecision.S) for i in gstate.points[:MAX_BATCH]]
+                gstate.influx_client.write_api(write_options=SYNCHRONOUS).write(opts.icargs['database'],
+                                                                                opts.icargs['org'],
+                                                                                points)
             if opts.verbose:
                 print("Data points written: " + str(MAX_BATCH))
             del gstate.points[:MAX_BATCH]
         if gstate.points:
-            gstate.influx_client.write_points(gstate.points,
-                                              time_precision="s",
-                                              retention_policy=opts.retention_policy)
+            if 'token' not in opts.icargs:
+                gstate.influx_client.write_points(gstate.points,
+                                                  time_precision="s",
+                                                  retention_policy=opts.retention_policy)
+            else:
+                points = [Point.from_dict(i, write_precision=WritePrecision.S) for i in gstate.points]
+                gstate.influx_client.write_api(write_options=SYNCHRONOUS).write(opts.icargs['database'],
+                                                                                opts.icargs['org'],
+                                                                                points)
+
             if opts.verbose:
                 print("Data points written: " + str(len(gstate.points)))
             gstate.points.clear()
@@ -290,6 +312,12 @@ def main():
         warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
     signal.signal(signal.SIGTERM, handle_sigterm)
+    if 'token' in opts.icargs:
+        from influxdb_client import InfluxDBClient
+        from influxdb_client.client.write_api import SYNCHRONOUS
+    else:
+        from influxdb import InfluxDBClient
+
     try:
         # attempt to hack around breakage between influxdb-python client and 2.0 server:
         gstate.influx_client = InfluxDBClient(**opts.icargs, headers={"Accept": "application/json"})
