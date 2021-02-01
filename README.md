@@ -57,6 +57,12 @@ python3 -m grpc_tools.protoc --descriptor_set_in=../dish.protoset --python_out=.
 ```
 Then move the resulting files to where the Python scripts can find them in the import path, such as in the same directory as the scripts themselves.
 
+_Note: The following error may occur if your system has an older version of the Python protobuf module installed:_
+
+**`AttributeError: module 'google.protobuf.descriptor' has no attribute '_internal_create_key'`**
+
+_To update, run_ `pip3 install --upgrade protobuf`
+
 Once those are available, the `dish_grpc_text.py` script can be used in place of the `grpcurl | parseJsonHistory.py` pipeline; however, the command line interface is slightly different because `dish_grpc_text.py` supports additional functionality. The equivalent command to `grpcurl | parseJsonHistory.py` would be:
 ```
 python3 dish_grpc_text.py ping_drop
